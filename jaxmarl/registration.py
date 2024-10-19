@@ -28,6 +28,7 @@ from .environments import (
     Overcooked,
     CoinGame,
     JaxNav,
+    SyncPredPrey
 )
 
 
@@ -114,6 +115,10 @@ def make(env_id: str, **env_kwargs):
     elif env_id == "jaxnav":
         env = JaxNav(**env_kwargs)
 
+    # 10. Predator-Prey
+    elif env_id == "sync_pred_prey":
+        env = SyncPredPrey(**env_kwargs)
+
     return env
 
 registered_envs = [
@@ -146,4 +151,5 @@ registered_envs = [
     "overcooked",
     "coin_game",
     "jaxnav",
+    "sync_pred_prey"
 ]
