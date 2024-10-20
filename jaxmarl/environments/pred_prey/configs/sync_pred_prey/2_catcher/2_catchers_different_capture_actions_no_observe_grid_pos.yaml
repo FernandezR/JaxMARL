@@ -1,0 +1,62 @@
+
+scenario: "synchronized_predator_prey"
+
+env_args:
+    config: "2_catcher-different_capture-wo_observe_grid_pos"
+
+    ###########################################
+    #               Environment               #
+    ###########################################
+    num_predators: 8                 # number of predators, i.e., adversary agents
+    num_prey: 8                      # number of prey in the environment, i.e., good agents
+    observe_grid_pos: False          # observe agent grid position
+    observe_current_timestep: False  # observe the current timestep
+    prey_rest: 0.0                   # probability that a stag will not move (at each time step)
+    world_shape: [10, 10]            # the shape of the grid-world [height, width]
+    
+    ###########################################
+    #          Graph (Adjacency Matrix)       #
+    ###########################################
+    proximal_distance: 2.0    # Distance threshold for proximal adjacency matrix
+    use_adj_matrix: False     # Whether the adjacency matrix is used (True) or not (False)
+    use_adj_mask: True        # Whether the adjacency matrix is masked when agents are frozen (True) or not (False)
+    use_self_attention: True  # Whether to add self loops to the adjacency matrix (True) or not (False)
+    dropout: False            # Whether to use dropout in the adjacency matrix (True) or not (False)
+    dropout_prob:             # Dropout rate for the adjacency matrix. Either a float 0.0 < p < 1.0 or None.
+                              # If none a uniform distribution is used for dropout.
+
+    ###########################################
+    #                 Reward                  #
+    ###########################################
+    miscapture_punishment: -2                    # punishment if less than capture_action_conditions agents executes capture_action
+    reward_capture: 10                           # reward for capturing a stag
+    reward_collision: 0                          # reward (or punishment) for colliding with other agents
+    reward_time: 0                               # reward (or punishment) given at each time step
+    
+    use_shaping_reward: False                    # whether to use shaping reward
+    shaping_reward_condition: 1                  # number of capturing predators needed to trigger shaping reward
+    shaping_reward: 0.5                          # shaping reward
+    shaping_reward_disable_timestep:             # global timestep at which to disable shaping reward
+
+    ###########################################
+    #                  Agent                  #
+    ###########################################
+    agent_obs: [2, 2]             # (radius-1) of the agent's observation, e.g., [0, 0] observes only one pixel
+    agent_move_block: [0,1]     # by which entities is an agent's move blocked (0=agents, 1=prey, 2=obstacle)
+    agent_share_space: False      # Whether agents can occupy the same space
+    agent_share_qty: 2            # Number agents that can occupy the same space
+    directed_observations: False  # Agents observe square around them (False) or a cone in the direction of the last action (True).
+    directed_cone_narrow: True    # Whether the diagonal is excluded from the directed_observation cone (True)
+    directed_extra_actions: True  # Whether the observation cone is controlled by movement (False) or actions (True)
+    prey_move_block: [0,1]      # by which entities is an agent's move blocked (0=agents, 1=prey, 2=obstacle)
+
+    ###########################################
+    #                 Capture                 #
+    ###########################################
+    capture_action: True               # whether capturing requires an extra action (True) or just capture_conditions (False)
+    capture_action_conditions: 2       # number of agents that have to simultaneously execute "catch" action
+    capture_terminal: False            # whether capturing any prey ends the episode (i.e. only one prey can be caught)
+    diagonal_capture: True             # whether a predator can capture a prey that is diagonally adjacent (True) or not (False)
+    modified_penalty_condition:        # minimum number of catching predators needed to trigger miscapture punishment
+    num_capture_actions: 2             # number of different capture actions, either 1 or
+                                       # the same value as capture_action_conditions

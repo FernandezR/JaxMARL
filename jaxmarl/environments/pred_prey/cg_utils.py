@@ -3,14 +3,15 @@
 
 """
 cg_utils.py
+
+Coordination graph utilities for use with predator-prey environments.
 """
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from math import factorial
 from random import randrange
-
 
 __author__ = 'Rolando Fernandez'
 __copyright__ = 'Copyright 2024, Multi-Agent Synchronized Predator-Prey'
@@ -108,14 +109,14 @@ def cg_edge_list(cg_topology, num_agents) -> np.array:
             # Flatten edges list
             edges = [edge for sublist in edges for edge in sublist]
         else:
-            raise ValueError("[sync_pred_prey.cg_utils.cg_edge_list()]: "
+            raise ValueError("[jaxmarl.environments.pred_prey.cg_utils.cg_edge_list()]: "
                              "Parameter cg_topology must be one of the following when it is a string: "
                              "{'empty','trio','pairs','double_line','line','double_cycle','cycle',"
                              "'double_star','star','double_full','full'}")
 
     elif isinstance(cg_topology, int):
         if 0 <= cg_topology <= factorial(num_agents - 1):
-            raise ValueError("[sync_pred_prey.cg_utils.cg_edge_list()]: "
+            raise ValueError("[jaxmarl.environments.pred_prey.cg_utils.cg_edge_list()]: "
                              "Parameter cg_topology must be (<= n_agents!) when it is an integer")
 
         for i in range(cg_topology):
@@ -130,13 +131,13 @@ def cg_edge_list(cg_topology, num_agents) -> np.array:
         # TODO: May need need to do check for duplicate edges
         if all([isinstance(edge, tuple) and (len(edge) == 2) and (all([isinstance(i, int) for i in edge]))
                 for edge in cg_topology]):
-            raise ValueError("[sync_pred_prey.cg_utils.cg_edge_list()]: "
+            raise ValueError("[jaxmarl.environments.pred_prey.cg_utils.cg_edge_list()]: "
                              "Parameter cg_topology must be a list of int-tuples of length 2 with no duplicates "
                              "when it is a list specifying the agent connections.")
         edges = cg_topology
 
     else:
-        raise ValueError("[sync_pred_prey.cg_utils.cg_edge_list()]: "
+        raise ValueError("[jaxmarl.environments.pred_prey.cg_utils.cg_edge_list()]: "
                          f"{type(cg_topology)}, not supported for parameter cg_topology. "
                          "Parameter cg_topology must be either one of these string options "
                          "{'empty','trio','pairs','double_line','line','double_cycle','cycle',"

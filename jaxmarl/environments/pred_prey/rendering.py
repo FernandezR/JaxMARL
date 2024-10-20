@@ -1,8 +1,27 @@
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+rendering.py
+
+Rendering functions for predator-prey environments.
+
+Based on rendering from storm environments.
+"""
+
 from __future__ import annotations
 
 import math
-
 import numpy as np
+
+__author__ = 'Rolando Fernandez'
+__copyright__ = 'Copyright 2024, Multi-Agent Synchronized Predator-Prey'
+__credits__ = ['Rolando Fernandez, FLAIROx/JaxMARL']
+__license__ = ''
+__version__ = '0.0.1'
+__maintainer__ = 'Rolando Fernandez'
+__email__ = 'rfernandez@utexas.edu'
+__status__ = 'Dev'
 
 
 def downsample(img, factor):

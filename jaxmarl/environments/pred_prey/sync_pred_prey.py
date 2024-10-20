@@ -9,38 +9,27 @@ Synchronized Predator-prey
 A version of predator-prey that meets the requirement of a
 Multi-Agent Synchronization Task as defined in []()
 """
-
-# TODO: Fix float64 errors with adjacency matrix
-
 import chex
 import jax
 import jax.numpy as jnp
-import math
 import numpy as np
-import random
 
-from networkx.linalg.graphmatrix import adjacency_matrix
-from overrides import override
-
-from collections import namedtuple
-from enum import IntEnum
+from enum import EnumType, IntEnum
 from flax.struct import dataclass
 from functools import partial
+from PIL import Image, ImageFont, ImageDraw
 from typing import Any, Optional, Tuple, Union, List, Dict
 
-from jaxmarl.environments.pred_prey import cg_utils
-
-from jaxmarl.environments import spaces, overcooked_layouts
+from jaxmarl.environments import spaces
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
+from jaxmarl.environments.pred_prey import cg_utils
+from jaxmarl.environments.pred_prey.utils import dict2namedtuple, generate_random_predator_color, jax_chebyshev
 
 from .rendering import (
     downsample,
     fill_coords,
-    highlight_img,
     point_in_circle,
-    point_in_rect,
-    point_in_triangle,
-    rotate_fn,
+    point_in_rect
 )
 
 __author__ = 'Rolando Fernandez'
@@ -57,66 +46,19 @@ __status__ = 'Dev'
 ###########################################
 SEEDRANGE = (1, int(1e9))
 
-PLAYER1_COLOUR = (255.0, 127.0, 14.0)  # kinda orange
-PLAYER2_COLOUR = (31.0, 119.0, 180.0)  # kinda blue
-PLAYER3_COLOUR = (236.0, 64.0, 122.0)  # kinda pink
-PLAYER4_COLOUR = (255.0, 235.0, 59.0)  # yellow
-PLAYER5_COLOUR = (41.0, 182.0, 246.0)  # baby blue
-PLAYER6_COLOUR = (171.0, 71.0, 188.0)  # purple
-PLAYER7_COLOUR = (121.0, 85.0, 72.0)   # brown
-PLAYER8_COLOUR = (255.0, 205.0, 210.0) # salmon
-PLAYER9_COLOUR = (44.0, 160.0, 44.0)   # green
-RED_COLOUR = (214.0, 39.0, 40.0)
+# Colors
+# PLAYER1_COLOR = (255.0, 127.0, 14.0)  # kinda orange
+# PLAYER2_COLOR = (31.0, 119.0, 180.0)  # kinda blue
+# PLAYER3_COLOR = (236.0, 64.0, 122.0)  # kinda pink
+# PLAYER4_COLOR = (255.0, 235.0, 59.0)  # yellow
+# PLAYER5_COLOR = (41.0, 182.0, 246.0)  # baby blue
+# PLAYER6_COLOR = (171.0, 71.0, 188.0)  # purple
+# PLAYER7_COLOR = (121.0, 85.0, 72.0)   # brown
+# PLAYER8_COLOR = (255.0, 205.0, 210.0) # salmon
+# PLAYER9_COLOR = (44.0, 160.0, 44.0)   # green
+# RED_COLOR = (214.0, 39.0, 40.0)
 
-###########################################
-#             Util Functions              #
-###########################################
-def dict2namedtuple(dictionary):
-    """
-    Converts a dictionary to namedtuple.
-
-    Parameters
-    ----------
-    dictionary : dict
-                 Dictionary object to be converted.
-
-    Returns
-    -------
-    Object : namedtuple
-        The namedtuple conversion of the input dictionary.
-    """
-    return namedtuple('GenericDict', dictionary.keys())(**dictionary)
-
-def jax_chebyshev(x: jnp.ndarray, y: jnp.ndarray, axis: int = None, keepdims: bool = False) -> jnp.ndarray:
-    """
-    Compute the Chebyshev distance.
-
-    Computes the Chebyshev distance between two 1-D arrays `x` and `y`,
-    which is defined as
-
-    Taken from scipy and converted for use with jax.
-
-    .. math::
-
-       \\max_i {|x_i-y_i|}.
-
-    Parameters
-    ----------
-    x :        (N,) jnp.ndarray
-               Input vector.
-    y :        (N,) jnp.ndarray
-               Input vector.
-    axis :     int
-               Axis along which to compute the Chebyshev distance. (Default: None)
-    keepdims : bool
-               Whether to keep the dimensions of the input.
-
-    Returns
-    -------
-    chebyshev : double
-        The Chebyshev distance between vectors `x` and `y`.
-    """
-    return jnp.max(jnp.abs(x - y), axis=axis, keepdims=keepdims)
+PREY_COLOR = (0.0, 255.0, 0.0)  # Green
 
 ###########################################
 #           Env Support Classes           #
@@ -130,6 +72,7 @@ class State:
     prey_actives: jnp.ndarray
     shared_reward: jnp.ndarray
     shared_true_reward:jnp.ndarray
+    disable_shaping_reward: jnp.ndarray
     grid: jnp.ndarray
     step: jnp.ndarray
     terminal: jnp.ndarray
@@ -154,46 +97,50 @@ class SyncPredPrey(MultiAgentEnv):
 
     grid = None
 
-    def __init__(self, args, seed=random.randint(*SEEDRANGE)):
+    def __init__(self, args: Union[dict, None] = None):
         """
         Initializes the Synchronized Predator-Prey environment.
-
-        Args:
-            args (types.SimpleNamespace/dict): Parsed configuration arguments
-            seed (int):                        Seed for random number generator
         """
         # Convert env args dictionary to namedtuple
-        if isinstance(args, dict):
+        # If it hasn't been done already
+        if args is None:
+            self.args = dict2namedtuple({})
+        elif isinstance(args, dict):
             self.args = dict2namedtuple(args)
-            args = dict2namedtuple(args)
+        else:
+            raise ValueError(f"[jaxmarl.environments.pred_prey.sync_pred_prey.SyncPredPrey.__init__()]: "
+                             f"args type of {type(args)} is not supported. "
+                             f"Only SimpleNamespace or dict are supported types for args parameter.")
 
         # Initialize MultiAgentEnv variables
-        super().__init__(num_agents=getattr(args, "num_predators", 8))
+        super().__init__(num_agents=getattr(self.args, "num_predators", 8))
+
+        # Debug
+        self.debug = False
 
         # Specifies whether state and obs spaces are flattened
         self.cnn = True
 
         # Flag for whether to expect actions to be torch tensors
         # and if torch tensors should be returned be step and reward functions
-        self.use_torch = getattr(args, "use_torch", False)
+        self.use_torch = getattr(self.args, "use_torch", False)
 
         # Create initial random generator key based on a seed
-        self.prng = jax.random.key(seed)
+        # self.prng = jax.random.key(seed)
         # self.np_prng = np.random.default_rng(seed)
 
         ###########################################
         #             Env Properties              #
         ###########################################
         # World
-        self.num_predators = getattr(args, "num_predators", 8)
-        self.num_prey = getattr(args, "num_prey", 8)
+        self.num_predators = getattr(self.args, "num_predators", 8)
+        self.num_prey = getattr(self.args, "num_prey", 8)
         self.num_entities = self.num_predators + self.num_prey
-        self.episode_limit = getattr(args, "episode_limit", 200)
-        self.episode_limit_jax = jnp.array([getattr(args, "episode_limit", 200)], dtype=jnp.int16)
-        self.observe_ids = getattr(args, "observe_ids", True)
-        self.world_shape = np.array(getattr(args, "world_shape", [10,10]), dtype=np.int8)
-        self.world_shape_jax = jnp.array(getattr(args, "world_shape", [10, 10]), dtype=jnp.int8)
-        self.truncate_episodes = getattr(args, "truncate_episodes", True)
+        self.episode_limit = getattr(self.args, "episode_limit", 200)
+        self.episode_limit_jax = jnp.array([getattr(self.args, "episode_limit", 200)], dtype=jnp.int16)
+        self.world_shape = np.array(getattr(self.args, "world_shape", [10,10]), dtype=np.int8)
+        self.world_shape_jax = jnp.array(getattr(self.args, "world_shape", [10, 10]), dtype=jnp.int8)
+        self.truncate_episodes = getattr(self.args, "truncate_episodes", True)
         self.features_enum = IntEnum('Features', ['empty'] +
                                             [f'predator_{i + 1}' for i in range(self.num_predators)] +
                                             ['prey', 'wall'], start=0)
@@ -204,40 +151,40 @@ class SyncPredPrey(MultiAgentEnv):
         self.state_size = np.prod(self.state_shape)
 
         # Agent
-        self.agent_obs = np.array(getattr(args, "agent_obs", [2,2]), dtype=np.int8)
+        self.agent_obs = np.array(getattr(self.args, "agent_obs", [2,2]), dtype=np.int8)
         self.agent_obs_size = self.agent_obs * 2 + 1
         self.agent_obs_len = np.prod(self.agent_obs_size) * self.num_features
 
         # Prey
-        self.prey_rest = getattr(args, "prey_rest", 0.0)
+        self.prey_rest = getattr(self.args, "prey_rest", 0.0)
 
         # Obs
-        self.observe_current_timestep = getattr(args, "observe_current_timestep", False)
-        self.observe_grid_pos = getattr(args, "observe_grid_pos", False)
+        self.observe_current_timestep = getattr(self.args, "observe_current_timestep", False)
+        self.observe_grid_pos = getattr(self.args, "observe_grid_pos", False)
         self.world_shape_oversized = self.world_shape + (self.agent_obs * 2)
 
         # Reward
-        self.modified_penalty_condition = getattr(args, "modified_penalty_condition", None)
-        self.miscapture_punishment = getattr(args, "miscapture_punishment", -2)
-        self.reward_capture = getattr(args, "reward_capture", 10)
-        self.reward_collision = getattr(args, "reward_collision", 0)
-        self.reward_time = getattr(args, "reward_time", 0)
+        self.modified_penalty_condition = getattr(self.args, "modified_penalty_condition", None)
+        self.miscapture_punishment = getattr(self.args, "miscapture_punishment", -2)
+        self.reward_capture = getattr(self.args, "reward_capture", 10)
+        self.reward_collision = getattr(self.args, "reward_collision", 0)
+        self.reward_time = getattr(self.args, "reward_time", 0)
 
         # Shaping Reward
-        self.use_shaping_reward = getattr(args, "use_shaping_reward", False)
-        self.shaping_reward_condition = getattr(args, "shaping_reward_condition", 2)
-        self.shaping_reward = getattr(args, "shaping_reward", 0.5)
-        self.shaping_reward_disable_timestep = getattr(args, "shaping_reward_disable_timestep", None)
+        self.use_shaping_reward = getattr(self.args, "use_shaping_reward", False)
+        self.shaping_reward_condition = getattr(self.args, "shaping_reward_condition", 2)
+        self.shaping_reward = getattr(self.args, "shaping_reward", 0.5)
+        self.shaping_reward_disable_timestep = getattr(self.args, "shaping_reward_disable_timestep", None)
 
         # Capture
-        self.capture_action = getattr(args, "capture_action", True)
-        self.capture_action_conditions = getattr(args, "capture_action_conditions", 2)
-        self.capture_conditions = getattr(args, "capture_conditions", 0)
-        self.capture_freezes = getattr(args, "capture_freezes", True)
-        self.capture_terminal = getattr(args, "capture_terminal", False)
-        self.diagonal_capture = getattr(args, "diagonal_capture", False)
-        self.remove_frozen = getattr(args, "remove_frozen", True)
-        self.num_capture_actions = getattr(args, "num_capture_actions", 1)
+        self.capture_action = getattr(self.args, "capture_action", True)
+        self.capture_action_conditions = getattr(self.args, "capture_action_conditions", 2)
+
+        # TODO: Add capture terminal condition to env_step
+        self.capture_terminal = getattr(self.args, "capture_terminal", False)
+
+        self.diagonal_capture = getattr(self.args, "diagonal_capture", False)
+        self.num_capture_actions = getattr(self.args, "num_capture_actions", 1)
 
         # Actions
         if self.diagonal_capture:
@@ -272,6 +219,9 @@ class SyncPredPrey(MultiAgentEnv):
                                                     np.array(range(self.world_shape[1]))),
                                         dtype=jnp.int8).T.reshape(-1, 2)
 
+        # Render
+        self.predator_color_list = [generate_random_predator_color() for _ in range(self.num_predators)]
+
         # Spaces
         _state_shape = (
             (self.state_shape[0], self.state_shape[1],self.state_shape[2])
@@ -292,14 +242,16 @@ class SyncPredPrey(MultiAgentEnv):
         }
 
         # Adjacency Matrix
-        self.use_adj_matrix = getattr(args, "use_adj_matrix", False)
-        self.use_adj_mask = getattr(args, "use_adj_mask", False)
-        self.use_self_attention = getattr(args, "cg_topology", None)
-        self.fixed_graph_topology = getattr(args, "cg_topology", None)
+        self.use_adj_matrix = getattr(self.args, "use_adj_matrix", False)
+        self.use_adj_mask = getattr(self.args, "use_adj_mask", False)
+        self.use_self_attention = getattr(self.args, "use_self_attention", None)
+        self.fixed_graph_topology = getattr(self.args, "cg_topology", None)
         self.use_fixed_graph = False if self.fixed_graph_topology is None else True
-        self.proximal_distance = getattr(args, "proximal_distance", 2.0)
-        self.dropout = getattr(args, "dropout", False)
-        self.dropout_prob = getattr(args, "dropout_prob", 0.35)
+        self.proximal_distance = getattr(self.args, "proximal_distance", 2.0)
+
+        # TODO: Add dropout to adjacency matrix functions
+        self.dropout = getattr(self.args, "dropout", False)
+        self.dropout_prob = getattr(self.args, "dropout_prob", 0.35)
 
         if self.use_adj_matrix and not self.use_fixed_graph:
             pairs = [[(j, i + j + 1) for i in range(self.num_predators - j - 1)] for j in range(self.num_predators - 1)]
@@ -383,8 +335,9 @@ class SyncPredPrey(MultiAgentEnv):
                       if self.use_adj_mask else None,
                       shared_reward=jnp.array([0.0], dtype=jnp.float32),
                       shared_true_reward=jnp.array([0.0], dtype=jnp.float32),
+                      disable_shaping_reward=jnp.array([False]),
                       step=jnp.array([0], dtype=jnp.int16),
-                      terminal = jnp.array([False]),
+                      terminal=jnp.array([False]),
                       ep_info={})
 
         return state
@@ -530,7 +483,7 @@ class SyncPredPrey(MultiAgentEnv):
             adjacency_matrix = self.get_fixed_adjacency_matrix()
 
             # Update the fixed adjacency matrix using the mask for active agents
-            if self.use_adj_mask and self.capture_freezes:
+            if self.use_adj_mask:
                 adjacency_matrix = adjacency_matrix * state.adjacency_mask
 
             return jnp.expand_dims(adjacency_matrix, 0)
@@ -541,6 +494,10 @@ class SyncPredPrey(MultiAgentEnv):
     def get_obs(self, state: State) -> jnp.ndarray:
         """
         Environment observation function
+
+        The observation consists of the partial grid observation centered on the agent.
+        Additionally, the observation can pre prepended with the current timestep and
+        grid position, when the flags are set in the config.
         """
         # Create oversized grid to allow for observations when at the edge of the grid
         # Padding input is ((# rows to add before the first row, # rows to add after the last row),
@@ -634,11 +591,6 @@ class SyncPredPrey(MultiAgentEnv):
             grid, new_pos, moved = val
             index = predator_random_indicies[i]
 
-            # jax.debug.print("Index {} action {} moved {} new_pos {} pos {}", index, actions[index], moved[index], new_pos[index], state.agent_positions[index])
-            # jax.debug.print("Index {} grid[new_pos[index][0], new_pos[index][1]] {}", index, grid[new_pos[index][0], new_pos[index][1]])
-            # jax.debug.print("Index {} new pos empty {}", index,
-            #                 grid[new_pos[index][0], new_pos[index][1]]  == self.features_enum.empty)
-
             def moved_fun(grid: jnp.ndarray, moved: jnp.ndarray, new_pos: jnp.ndarray) \
                     -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
                 """ Conditional function for handling agents that moved """
@@ -684,7 +636,9 @@ class SyncPredPrey(MultiAgentEnv):
         prey_random_indicies = jax.random.permutation(key, self.num_prey)
 
         # Check for available actions for the prey
+        # Positions are bounded by the environment shape
         possible_prey_positions = jnp.expand_dims(state.prey_positions, axis=1) + self.grid_actions[1:5]
+        possible_prey_positions = jnp.clip(possible_prey_positions, 0, (self.world_shape_jax - 1))
         available_prey_positions = grid[possible_prey_positions[:, :, 0],
                                         possible_prey_positions[:, :, 1]]
 
@@ -694,6 +648,21 @@ class SyncPredPrey(MultiAgentEnv):
             # Check for possible predators on the diagonal
             possible_prey_capture_diag_positions = (jnp.expand_dims(state.prey_positions, axis=1) +
                                                     self.diagonal_actions)
+
+            # Bound the positions by the environment shape
+            possible_prey_capture_diag_positions_clipped = jnp.clip(possible_prey_capture_diag_positions,
+                                                                   0, (self.world_shape_jax - 1))
+
+            # Bounce back to current prey position if diagonal position is clipped
+            # This prevent possible duplicates of capture predators when using clip
+            # since diagonal movement is in both row and column dimensions.
+            possible_prey_capture_diag_positions = jnp.where(jnp.all(possible_prey_capture_diag_positions ==
+                                                                     possible_prey_capture_diag_positions_clipped,
+                                                                     axis=-1, keepdims=True),
+                                                             possible_prey_capture_diag_positions,
+                                                             jnp.repeat(jnp.expand_dims(state.prey_positions, axis=1),
+                                                                        4, axis=1))
+
             # Combine all positions around the prey to check for capture predators
             possible_prey_capture_positions = jnp.concatenate([possible_prey_positions,
                                                                possible_prey_capture_diag_positions], axis=1)
@@ -843,6 +812,9 @@ class SyncPredPrey(MultiAgentEnv):
                                    new_predator_positions[capture_predator_indicies][:, 1]].set(
                         jnp.int8(self.features_enum.empty))
 
+                    if self.debug:
+                        jax.debug.print("Prey {} - Capture Predators: {}", index, capture_predator_indicies)
+
                     # Update actives for predators and prey
                     predator_actives = predator_actives.at[capture_predator_indicies].set(0)
                     prey_actives = prey_actives.at[index].set(0)
@@ -912,11 +884,13 @@ class SyncPredPrey(MultiAgentEnv):
                     if self.capture_action and self.num_capture_actions > 1:
                         shared_reward, shared_true_reward =  (
                             jax.lax.cond(self.use_shaping_reward &
+                                         ~state.disable_shaping_reward[0] &
                                          (num_unique_capture_actions == self.shaping_reward_condition),
                                          apply_shaping_reward, no_shaping_reward, shared_reward, shared_true_reward))
                     else:
                         shared_reward, shared_true_reward =  (
                             jax.lax.cond(self.use_shaping_reward &
+                                         ~state.disable_shaping_reward[0] &
                                          (num_capture_predators[index] == self.shaping_reward_condition),
                                          apply_shaping_reward, no_shaping_reward, shared_reward, shared_true_reward))
 
@@ -1023,6 +997,7 @@ class SyncPredPrey(MultiAgentEnv):
                       adjacency_mask=new_adjacency_mask,
                       shared_reward=shared_reward,
                       shared_true_reward=shared_true_reward,
+                      disable_shaping_reward=state.disable_shaping_reward,
                       step=state.step + 1,
                       terminal=jnp.array([False]),
                       ep_info={})
@@ -1091,236 +1066,164 @@ class SyncPredPrey(MultiAgentEnv):
     ###########################################
     #             Render Functions            #
     ###########################################
-    # @classmethod
-    # def render_tile(
-    #     cls,
-    #     obj: int,
-    #     agent_dir: Union[int, None] = None,
-    #     agent_hat: bool = False,
-    #     highlight: bool = False,
-    #     tile_size: int = 32,
-    #     subdivs: int = 3,
-    # ) -> np.ndarray:
-    #     """
-    #     Render a tile and cache the result
-    #     """
-    #
-    #     # Hash map lookup key for the cache
-    #     key: tuple[Any, ...] = (agent_dir, agent_hat, highlight, tile_size)
-    #     if obj:
-    #         key = (obj, 0, 0, 0) + key if obj else key
-    #
-    #     if key in cls.tile_cache:
-    #         return cls.tile_cache[key]
-    #
-    #     img = onp.zeros(
-    #         shape=(tile_size * subdivs, tile_size * subdivs, 3),
-    #         dtype=onp.uint8,
-    #     )
-    #
-    #     # Draw the grid lines (top and left edges)
-    #     fill_coords(img, point_in_rect(0, 0.031, 0, 1), (100, 100, 100))
-    #     fill_coords(img, point_in_rect(0, 1, 0, 0.031), (100, 100, 100))
-    # # class Items(IntEnum):
-    #
-    #     if obj == Items.agent1:
-    #         # Draw the agent 1
-    #         agent_color = PLAYER1_COLOUR
-    #     elif obj == Items.agent2:
-    #         # Draw agent 2
-    #         agent_color = PLAYER2_COLOUR
-    #     elif obj == Items.agent3:
-    #         # Draw agent 3
-    #         agent_color = PLAYER3_COLOUR
-    #     elif obj == Items.agent4:
-    #         # Draw agent 4
-    #         agent_color = PLAYER4_COLOUR
-    #     elif obj == Items.agent5:
-    #         # Draw agent 5
-    #         agent_color = PLAYER5_COLOUR
-    #     elif obj == Items.agent6:
-    #         # Draw agent 6
-    #         agent_color = PLAYER6_COLOUR
-    #     elif obj == Items.agent7:
-    #         # Draw agent 7
-    #         agent_color = PLAYER7_COLOUR
-    #     elif obj == Items.agent8:
-    #         # Draw agent 8
-    #         agent_color = PLAYER8_COLOUR
-    #     elif obj == Items.defection_coin:
-    #         # Draw the red coin as GREEN COOPERATE
-    #         fill_coords(
-    #             img, point_in_circle(0.5, 0.5, 0.31), (44.0, 160.0, 44.0)
-    #         )
-    #     elif obj == Items.cooperation_coin:
-    #         # Draw the blue coin as DEFECT/ RED COIN
-    #         fill_coords(
-    #             img, point_in_circle(0.5, 0.5, 0.31), (214.0, 39.0, 40.0)
-    #         )
-    #     elif obj == Items.wall:
-    #         fill_coords(img, point_in_rect(0, 1, 0, 1), (127.0, 127.0, 127.0))
-    #
-    #     elif obj == Items.interact:
-    #         fill_coords(img, point_in_rect(0, 1, 0, 1), (188.0, 189.0, 34.0))
-    #
-    #     elif obj == 99:
-    #         fill_coords(img, point_in_rect(0, 1, 0, 1), (44.0, 160.0, 44.0))
-    #
-    #     elif obj == 100:
-    #         fill_coords(img, point_in_rect(0, 1, 0, 1), (214.0, 39.0, 40.0))
-    #
-    #     elif obj == 101:
-    #         # white square
-    #         fill_coords(img, point_in_rect(0, 1, 0, 1), (255.0, 255.0, 255.0))
-    #
-    #     # Overlay the agent on top
-    #     if agent_dir is not None:
-    #         if agent_hat:
-    #             tri_fn = point_in_triangle(
-    #                 (0.12, 0.19),
-    #                 (0.87, 0.50),
-    #                 (0.12, 0.81),
-    #                 0.3,
-    #             )
-    #
-    #             # Rotate the agent based on its direction
-    #             tri_fn = rotate_fn(
-    #                 tri_fn,
-    #                 cx=0.5,
-    #                 cy=0.5,
-    #                 theta=0.5 * math.pi * (1 - agent_dir),
-    #             )
-    #             fill_coords(img, tri_fn, (255.0, 255.0, 255.0))
-    #
-    #         tri_fn = point_in_triangle(
-    #             (0.12, 0.19),
-    #             (0.87, 0.50),
-    #             (0.12, 0.81),
-    #             0.0,
-    #         )
-    #
-    #         # Rotate the agent based on its direction
-    #         tri_fn = rotate_fn(
-    #             tri_fn, cx=0.5, cy=0.5, theta=0.5 * math.pi * (1 - agent_dir)
-    #         )
-    #         fill_coords(img, tri_fn, agent_color)
-    #
-    #     # Highlight the cell if needed
-    #     if highlight:
-    #         highlight_img(img)
-    #
-    #     # Downsample the image to perform supersampling/anti-aliasing
-    #     img = downsample(img, subdivs)
-    #
-    #     # Cache the rendered tile
-    #     cls.tile_cache[key] = img
-    #     return img
-    #
-    # def render(self, state: State) -> np.ndarray:
-    #     """ Render the grid state. """
-    #     # Image Dimensions
-    #     tile_size = 32
-    #     width_px = GRID.shape[0] * tile_size
-    #     height_px = GRID.shape[0] * tile_size
-    #
-    #     # Create the image
-    #     img = np.zeros(shape=(height_px, width_px, 3), dtype=nnp.uint8)
-    #     grid = onp.array(state.grid)
-    #     grid = onp.pad(
-    #         grid, ((PADDING, PADDING), (PADDING, PADDING)), constant_values=Items.wall
-    #     )
-    #     for a in range(self.num_agents):
-    #         startx, starty = self.get_obs_point(
-    #             state.agent_positions[a, 0],
-    #             state.agent_positions[a, 1],
-    #             state.agent_positions[a, 2]
-    #         )
-    #         highlight_mask[
-    #             startx : startx + OBS_SIZE, starty : starty + OBS_SIZE
-    #         ] = True
-    #
-    #     # Render the grid
-    #     for j in range(0, grid.shape[1]):
-    #         for i in range(0, grid.shape[0]):
-    #             cell = grid[i, j]
-    #             if cell == 0:
-    #                 cell = None
-    #             agent_here = []
-    #             for a in range(1, self.num_agents+1):
-    #                 agent_here.append(cell == a)
-    #             # if cell in [1,2]:
-    #             #     print(f'coordinates: {i},{j}')
-    #             #     print(cell)
-    #
-    #
-    #             agent_dir = None
-    #             for a in range(self.num_agents):
-    #                 agent_dir = (
-    #                     state.agent_positions[a,2].item()
-    #                     if agent_here[a]
-    #                     else agent_dir
-    #                 )
-    #
-    #             agent_hat = False
-    #             for a in range(self.num_agents):
-    #                 agent_hat = (
-    #                     bool(state.agent_inventories[a].sum() > INTERACT_THRESHOLD)
-    #                     if agent_here[a]
-    #                     else agent_hat
-    #                 )
-    #
-    #             tile_img = InTheGrid.render_tile(
-    #                 cell,
-    #                 agent_dir=agent_dir,
-    #                 agent_hat=agent_hat,
-    #                 highlight=highlight_mask[i, j],
-    #                 tile_size=tile_size,
-    #             )
-    #
-    #             ymin = j * tile_size
-    #             ymax = (j + 1) * tile_size
-    #             xmin = i * tile_size
-    #             xmax = (i + 1) * tile_size
-    #             img[ymin:ymax, xmin:xmax, :] = tile_img
-    #
-    #     img = onp.rot90(
-    #         img[
-    #             (PADDING - 1) * tile_size : -(PADDING - 1) * tile_size,
-    #             (PADDING - 1) * tile_size : -(PADDING - 1) * tile_size,
-    #             :,
-    #         ],
-    #         2,
-    #     )
-    #     # Render the inventory
-    #     # agent_inv = []
-    #     # for a in range(self.num_agents):
-    #     #     agent_inv.append(self.render_inventory(state.agent_inventories[a], img.shape[1]))
-    #
-    #
-    #     time = self.render_time(state, img.shape[1])
-    #     # img = onp.concatenate((img, *agent_inv, time), axis=0)
-    #     img = onp.concatenate((img, time), axis=0)
-    #     return img
-    #
-    # def render_time(self, state: State, width_px: int) -> np.array:
-    #     """ Render time bar representing steps at the bottom of the image. """
-    #     # Tile dimensions
-    #     tile_height = 32
-    #     tile_width = width_px // self.episode_limit
-    #
-    #     # Create the image
-    #     img = np.zeros(shape=(2 * tile_height, width_px, 3), dtype=np.uint8)
-    #
-    #     # Add the bar for each step taken
-    #     j = 0
-    #     for i in range(0, state.step):
-    #         ymin = j * tile_height
-    #         ymax = (j + 1) * tile_height
-    #         xmin = i * tile_width
-    #         xmax = (i + 1) * tile_width
-    #         img[ymin:ymax, xmin:xmax, :] = np.int8(255)
-    #
-    #     return img
+    @classmethod
+    def render_tile(cls, obj: Union[int, None], features: EnumType, num_predators: int,
+                    predator_color_list: list[Tuple[float, float, float], ...],
+                    tile_size: int = 32, subdivs: int = 3) -> np.ndarray:
+        """
+        Render a tile and cache the result
+        """
+        # Hash map lookup key for the cache
+        key: tuple[Any, ...] = (obj, tile_size)
+        # if obj:
+        #     key = (obj, 0, 0, 0) + key if obj else key
+
+        # Check if tile is in the cache
+        # If it is return the cached tile img
+        if key in cls.tile_cache:
+            return cls.tile_cache[key]
+
+        # Create tile image
+        img = np.zeros(shape=(tile_size * subdivs, tile_size * subdivs, 3), dtype=np.uint8)
+
+        # Set tile to white background
+        fill_coords(img, point_in_rect(0, 1, 0, 1), (255.0, 255.0, 255.0))
+
+        # Draw the grid lines (top and left edges)
+        fill_coords(img, point_in_rect(0, 0.031, 0, 1), (100, 100, 100))
+        fill_coords(img, point_in_rect(0, 1, 0, 0.031), (100, 100, 100))
+
+        if (obj >= 1) and (obj <= num_predators):
+            # Fill tile with predator
+            color = predator_color_list[obj - 1]
+            fill_coords(img, point_in_circle(0.5, 0.5, 0.39), color)
+
+            # Convert to pillow image format
+            p_img = Image.fromarray(img)
+
+            # Load font
+            font = ImageFont.truetype("Roboto-Black.ttf", 50)
+
+            # Overlay predator index to image
+            ImageDraw.Draw(p_img).text((int((tile_size * subdivs) / 2) - 16, int((tile_size * subdivs) / 2) - 32),
+                                       text=f'{obj}', fill='white', font=font)
+
+            # Convert image back to numpy
+            img = np.array(p_img)
+
+        elif obj == features.prey:
+            fill_coords(img, point_in_circle(0.5, 0.5, 0.28), PREY_COLOR)
+
+        elif obj == features.wall:
+            fill_coords(img, point_in_rect(0, 1, 0, 1), (127.0, 127.0, 127.0))
+
+        # Legacy from storm env
+        elif obj == 99:
+            fill_coords(img, point_in_rect(0, 1, 0, 1), (44.0, 160.0, 44.0))
+
+        elif obj == 100:
+            fill_coords(img, point_in_rect(0, 1, 0, 1), (214.0, 39.0, 40.0))
+
+        elif obj == 101:
+            # white square
+            fill_coords(img, point_in_rect(0, 1, 0, 1), (255.0, 255.0, 255.0))
+
+        elif obj == 102:
+            # black square
+            fill_coords(img, point_in_rect(0, 1, 0, 1), (0.0, 0.0, 0.0))
+
+        # Downsample the image to perform supersampling/anti-aliasing
+        img = downsample(img, subdivs)
+
+        # Cache the rendered tile
+        cls.tile_cache[key] = img
+        return img
+
+    def render(self, state: State) -> np.ndarray:
+        """ Render the grid state. """
+        # Image Dimensions
+        tile_size = 32
+        width_px = self.world_shape_oversized[1] * tile_size  # Rows
+        height_px = self.world_shape_oversized[0] * tile_size  # Columns
+
+        # Create the image
+        img = np.zeros(shape=(height_px, width_px, 3), dtype=np.uint8)
+        grid = np.pad(np.array(state.grid),
+                      ((self.agent_obs[0], self.agent_obs[0]), (self.agent_obs[1], self.agent_obs[1])),
+                      constant_values=self.features_enum.wall)
+
+        # Render the grid
+        for i in range(0, grid.shape[0]):
+            for j in range(0, grid.shape[1]):
+                cell = grid[i, j]
+
+                # Create tile image
+                tile_img = SyncPredPrey.render_tile(cell,
+                                                    self.features_enum,
+                                                    self.num_predators,
+                                                    self.predator_color_list,
+                                                    tile_size=tile_size)
+
+                # Add tile to main image
+                ymin = j * tile_size
+                ymax = (j + 1) * tile_size
+                xmin = i * tile_size
+                xmax = (i + 1) * tile_size
+                img[xmin:xmax, ymin:ymax, :] = tile_img
+
+        # Add time to image as text
+        img = self.render_time_text(state, img)
+
+        # Add time bar representing steps to image
+        # time = self.render_time(state, img.shape[1])
+        # img = np.concatenate((img, time), axis=0)
+
+        return img
+
+    @staticmethod
+    def render_time_text(state: State, image: np.ndarray) -> np.ndarray:
+        """ Render current step in text on the grid image. """
+        # Convert image to pillow format
+        p_img = Image.fromarray(image)
+        width, height = p_img.size
+
+        # Load font
+        font = ImageFont.truetype("Roboto-Black.ttf", 28)
+
+        # Overlay step to image
+        ImageDraw.Draw(p_img).text((10, height - 35),
+                                   text=f'Step: {np.array(state.step)[0]}', fill='black', font=font)
+
+        # Convert back to numpy
+        return np.array(p_img)
+
+    def render_time(self, state: State, width_px: int) -> np.array:
+        """ Render time bar representing steps at the bottom of the image. """
+        # Tile dimensions
+        tile_height = 32
+        # Width is rounded using the floor function so it won't always be able to file the whole screen
+        tile_width = width_px // self.episode_limit
+
+        # Create the image
+        img = np.zeros(shape=(2 * tile_height, width_px, 3), dtype=np.uint8)
+
+        # Add the bar for each step taken
+        # j = 0
+        # for i in range(0, np.array(state.step)[0]):
+        #     ymin = j * tile_height
+        #     ymax = (j + 1) * tile_height
+        #     xmin = i * tile_width
+        #     xmax = (i + 1) * tile_width
+        #     img[ymin:ymax, xmin:xmax, :] = np.int8(255)
+
+        # Render total steps taken rather than using for loop
+        ymin = 0
+        ymax = tile_height
+        xmin = 0
+        xmax = np.array(state.step)[0] * tile_width
+        img[ymin:ymax, xmin:xmax, :] = np.int8(255)
+
+        return img
 
     ###########################################
     #          Saved Unused Functions         #

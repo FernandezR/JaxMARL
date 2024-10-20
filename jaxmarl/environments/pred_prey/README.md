@@ -1,53 +1,48 @@
-# Spatial-Temporal Representations of Matrix Games (STORM)
+# Predator-Prey Games
 
-Inspired by the "in the Matrix" games in [Melting Pot 2.0](https://arxiv.org/abs/2211.13746), the [STORM](https://openreview.net/forum?id=54F8woU8vhq) environment expands on matrix games by representing them as grid-world scenarios. Agents collect resources which define their strategy during interactions and are rewarded based on a pre-specified payoff matrix. This allows for the embedding of fully cooperative, competitive or general-sum games, such as the prisoner's dilemma. 
+## Environments
 
-Thus, STORM can be used for studying paradigms such as *opponent shaping*, where agents act with the intent to change other agents' learning dynamics. Compared to the Coin Game or matrix games, the grid-world setting presents a variety of new challenges such as partial observability, multi-step agent interactions, temporally-extended actions, and longer time horizons. Unlike the "in the Matrix" games from Melting Pot, STORM features stochasticity, increasing the difficulty
+### Synchronized Predator-Prey
 
+Inspired by the original Predator-Prey games, the [Synchronized Predator-Prey](https://arxiv.org/abs/2404.18798) environment expands on Predator-Prey games by requiring synchronization through coordination as described in [Multi-Agent Synchronization Tasks](https://arxiv.org/abs/2404.18798). Agents must work together (synchronize their actions) to capture the prey or suffer a penalty for failed capture attempts. This creates a fully cooperative game that requires a high-degree of coordination between the agents.
+
+Thus, Synchronized Predator-Prey can be used for studying the efficacy of different coordination strategies on a Multi-Agent Synchronization Task domain.
 
 ## Visualisation
 
-We render each timestep and then create a gif from the collection of images. Further examples are provided [here](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/tutorials).
+We render each timestep and then create a gif from the collection of images. Further examples are provided [here](https://github.com/FernandezR/JaxMARL/tree/main/jaxmarl/tutorials).
 
 ```python
 import jax
 import jax.numpy as jnp
+
 from PIL import Image
+
 from jaxmarl import make
 
 # load environment
-num_agents = 2
-rng = jax.random.PRNGKey(18)
-env = make('storm', 
-        num_inner_steps=512, 
-        num_outer_steps=1, 
-        num_agents=num_agents, 
-        fixed_coin_location=True,
-        payoff_matrix=jnp.array([[[3, 0], [5, 1]], [[3, 5], [0, 1]]]),
-        freeze_penalty=5,)
-rng, _rng = jax.random.split(rng)
-obs, old_state = env.reset(_rng)
-
+prng = jax.random.PRNGKey(7)
+env = make('sync_pred_prey')
+prng, key = jax.random.split(prng)
+state, obs, avail_actions = env.reset(key)
 
 # render each timestep
 pics = []
-for t in range(512):
-    rng, *rngs = jax.random.split(rng, num_agents+1)
-    actions = [jax.random.choice(
-        rngs[a], a=env.action_space(0).n, p=jnp.array([0.1, 0.1, 0.5, 0.1, 0.2])
-    ) for a in range(num_agents)]
+img = env.render(state)
+pics.append(Image.fromarray(img))
+pics[0].save("state_pics/state_0.png")
 
-    obs, state, reward, done, info = env.step_env(
-        rng, old_state, [a for a in actions]
-    )
+for t in range(200):
+    prng, *keys = jax.random.split(prng, 3)
+    actions = jax.random.choice(keys[0], a=env.num_actions, shape=(env.num_predators,))
+
+    state, obs, avail_actions = env.step(keys[1], state, actions)
 
     img = env.render(state)
-    pics.append(img)
+    pics.append(Image.fromarray(img))
+    pics[t+1].save(f"state_pics/state_{t+1}.png")
 
-    old_state = state
-
-# create and save gif
-pics = [Image.fromarray(img) for img in pics]        
+# create and save gif     
 pics[0].save(
     "state.gif",
     format="GIF",
