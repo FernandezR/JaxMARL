@@ -225,7 +225,7 @@ class InTheGrid(MultiAgentEnv):
             return x, y
 
         def _get_obs(state: State) -> jnp.ndarray:
-            # create state
+            # create padded grid to allow for selecting obs when at the edge
             grid = jnp.pad(
                 state.grid,
                 ((PADDING, PADDING), (PADDING, PADDING)),
@@ -235,11 +235,15 @@ class InTheGrid(MultiAgentEnv):
                 x, y = _get_obs_point(
                 agent_pos[0], agent_pos[1], agent_pos[2]
                 )
+                # Dynamic Slice
+                # grid[x:x+OBS_SIZE], [y:y+OBS_SIZE]
                 grid1 = jax.lax.dynamic_slice(
                     grid,
                     start_indices=(x, y),
                     slice_sizes=(OBS_SIZE, OBS_SIZE),
                 )
+                # Not sure why rotation is needed
+                # Related to the direction agents are facing
                 # rotate
                 grid1 = jnp.where(
                     agent_pos[2] == 1,
@@ -261,6 +265,8 @@ class InTheGrid(MultiAgentEnv):
             #     i correct its orientation relative to mine
             #     angle is 
 
+                # Not sure why this is here
+                # It is not clear what angles reprsents
                 def check_angle(grid1, item, other_agent_pos):    
                     angle1 = jnp.where(
                         grid1 == item,
@@ -270,11 +276,16 @@ class InTheGrid(MultiAgentEnv):
                     return angle1
                 
                 vmap_check_angle = jax.vmap(check_angle, (None, 0, 0), 0)
+                # other_agents_idx: [[2], [3]]
+                # other_agents_pos: [[[-128, -128, -128]], [[-128, 1-128, -128]]]
                 angle1 = vmap_check_angle(grid1, other_agents_idx, other_agents_pos)
                 angle1 = jnp.sum(angle1, axis=0) - 1
                 angle1 = jax.nn.one_hot(angle1, 4)
+                # Expand to number of features
                 # one-hot (drop first channel as its empty blocks)
                 grid1 = jax.nn.one_hot(grid1 - 1, len(Items) - 1, dtype=jnp.int8)
+                # _grid1 seems to be swapping the indexs of the agents in their respective obs
+                # So each agent views themselves as agent 0. Not sure why this is being done
                 _grid1 = grid1.at[:, :, 0].set(grid1[:, :, agent_idx])
                 _grid1 = _grid1.at[:, :, agent_idx].set(grid1[:, :, 0])
                 obs1 = jnp.concatenate([_grid1, angle1], axis=-1)
@@ -1126,6 +1137,7 @@ class InTheGrid(MultiAgentEnv):
 
         # Overlay the agent on top
         if agent_dir is not None:
+            # Adds border around agent
             if agent_hat:
                 tri_fn = point_in_triangle(
                     (0.12, 0.19),
@@ -1219,7 +1231,7 @@ class InTheGrid(MultiAgentEnv):
                         if agent_here[a]
                         else agent_dir
                     )
-                
+
                 agent_hat = False
                 for a in range(self.num_agents):
                     agent_hat = (
