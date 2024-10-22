@@ -13,6 +13,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
+import os
 
 from enum import EnumType, IntEnum
 from flax.struct import dataclass
@@ -1108,7 +1109,7 @@ class SyncPredPrey(MultiAgentEnv):
             p_img = Image.fromarray(img)
 
             # Load font
-            font = ImageFont.truetype("Roboto-Black.ttf", 50)
+            font = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "Roboto-Black.ttf"), 50)
 
             # Overlay predator index to image
             ImageDraw.Draw(p_img).text((int((tile_size * subdivs) / 2) - 16, int((tile_size * subdivs) / 2) - 32),
@@ -1194,7 +1195,7 @@ class SyncPredPrey(MultiAgentEnv):
         width, height = p_img.size
 
         # Load font
-        font = ImageFont.truetype("Roboto-Black.ttf", 28)
+        font = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "Roboto-Black.ttf"), 28)
 
         # Overlay step to image
         ImageDraw.Draw(p_img).text((10, height - 35),
