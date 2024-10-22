@@ -20,7 +20,6 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import jax
 import jax.numpy as jnp
-import os
 
 # Import jaxmarl modules
 # If ModuleNotFoundError is raised, add jaxmarl to path and try again.

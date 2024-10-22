@@ -163,6 +163,12 @@ class SyncPredPrey(MultiAgentEnv):
         self.observe_grid_pos = getattr(self.args, "observe_grid_pos", False)
         self.world_shape_oversized = self.world_shape + (self.agent_obs * 2)
 
+        if self.observe_current_timestep:
+            self.agent_obs_len += 1
+
+        if self.observe_grid_pos:
+            self.agent_obs_len += 2
+
         # Reward
         self.modified_penalty_condition = getattr(self.args, "modified_penalty_condition", None)
         self.miscapture_punishment = getattr(self.args, "miscapture_punishment", -2)
@@ -1012,9 +1018,9 @@ class SyncPredPrey(MultiAgentEnv):
 
         # Check whether the episode is in a terminal state
         # Terminal is reached is either the predators or prey are all inactive
-        predator_alive = ~jnp.all(state.agent_actives)
-        prey_alive = ~jnp.all(state.prey_actives)
-        state = jax.lax.cond(jnp.logical_or(state.terminal[0], jnp.logical_or(predator_alive, prey_alive)),
+        predators_inactive = ~jnp.any(state.agent_actives)
+        prey_inactive = ~jnp.any(state.prey_actives)
+        state = jax.lax.cond(jnp.logical_or(state.terminal[0], jnp.logical_or(predators_inactive, prey_inactive)),
                              episode_terminal, episode_not_terminal, state)
 
         def episode_limit_reached(state):
