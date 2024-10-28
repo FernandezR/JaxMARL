@@ -646,10 +646,6 @@ class SyncPredPrey(MultiAgentEnv):
         # Positions are bounded by the environment shape
         possible_prey_positions = jnp.expand_dims(state.prey_positions, axis=1) + self.grid_actions[1:5]
         possible_prey_positions = jnp.clip(possible_prey_positions, 0, (self.world_shape_jax - 1))
-        available_prey_positions = grid[possible_prey_positions[:, :, 0],
-                                        possible_prey_positions[:, :, 1]]
-
-        available_prey_positions = jnp.where(available_prey_positions == self.features_enum.empty, 1, 0)
 
         if self.diagonal_capture:
             # Check for possible predators on the diagonal
@@ -676,36 +672,6 @@ class SyncPredPrey(MultiAgentEnv):
         else:
             possible_prey_capture_positions = possible_prey_positions
 
-        # Get the entities in the positions around the prey
-        # and zero out the prey entities
-        possible_capture_predators = grid[possible_prey_capture_positions[:, :, 0],
-                                          possible_prey_capture_positions[:, :, 1]]
-        possible_capture_predators = jnp.where(possible_capture_predators == self.features_enum.prey, 0,
-                                               possible_capture_predators)
-
-        # Check if predators have capture action selected
-        if self.capture_action:
-            # Get actions predators in positions around the prey.
-            # We must subtract 1 since the action indicies start at 0
-            # and the predator indicies start at 1.
-            # We append -1 to the actions so that the -1 feature index will return a -1 action.
-            possible_capture_predators_actions = jnp.append(actions, -1)[possible_capture_predators - 1]
-
-            # Create mask for pedators with capture actions
-            mask_possible_capture_predators_actions = jnp.where(possible_capture_predators_actions >= 5, 1, 0)
-
-            # Mask out predators with non-capture actions
-            possible_capture_predators_actions = (possible_capture_predators_actions *
-                                                  mask_possible_capture_predators_actions)
-            possible_capture_predators = possible_capture_predators * mask_possible_capture_predators_actions
-
-            if self.num_capture_actions == 1:
-                num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum(axis=1)
-
-        else:
-            # Count if there are enough predators around the prey
-            num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum(axis=1)
-
         # Move prey if they have not been captured
         # Else remove them and the capturing predators from the grid
         def prey_position_update(i:int, val:Tuple[chex.PRNGKey, jnp.ndarray, jnp.ndarray, jnp.ndarray,
@@ -718,7 +684,42 @@ class SyncPredPrey(MultiAgentEnv):
             index = prey_random_indicies[i]
             prey_key, loop_key = jax.random.split(prey_key)
 
-            size = len(possible_capture_predators[index])
+            # Check for available actions for the prey
+            available_prey_positions = grid[possible_prey_positions[index, :, 0],
+                                            possible_prey_positions[index, :, 1]]
+            available_prey_positions = jnp.where(available_prey_positions == self.features_enum.empty, 1, 0)
+
+            # Get the entities in the positions around the prey
+            # and zero out the prey entities
+            possible_capture_predators = grid[possible_prey_capture_positions[index, :, 0],
+                                              possible_prey_capture_positions[index, :, 1]]
+            possible_capture_predators = jnp.where(possible_capture_predators == self.features_enum.prey, 0,
+                                                   possible_capture_predators)
+
+            # Check if predators have capture action selected
+            if self.capture_action:
+                # Get actions predators in positions around the prey.
+                # We must subtract 1 since the action indicies start at 0
+                # and the predator indicies start at 1.
+                # We append -1 to the actions so that the -1 feature index will return a -1 action.
+                possible_capture_predators_actions = jnp.append(actions, -1)[possible_capture_predators - 1]
+
+                # Create mask for pedators with capture actions
+                mask_possible_capture_predators_actions = jnp.where(possible_capture_predators_actions >= 5, 1, 0)
+
+                # Mask out predators with non-capture actions
+                possible_capture_predators_actions = (possible_capture_predators_actions *
+                                                      mask_possible_capture_predators_actions)
+                possible_capture_predators = possible_capture_predators * mask_possible_capture_predators_actions
+
+                if self.num_capture_actions == 1:
+                    num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum()
+
+            else:
+                # Count if there are enough predators around the prey
+                num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum()
+
+            size = len(possible_capture_predators)
 
             def active_fun(grid: jnp.ndarray, prey_positions: jnp.ndarray,
                            predator_actives: jnp.ndarray, prey_actives: jnp.ndarray,
@@ -737,7 +738,7 @@ class SyncPredPrey(MultiAgentEnv):
                     # Capture predator indicies
                     # Only get the number of required predators
                     capture_predator_indicies = (
-                        possible_capture_predators)[index][predator_indices[:self.capture_action_conditions]]
+                        possible_capture_predators)[predator_indices[:self.capture_action_conditions]]
                     capture_predator_indicies = capture_predator_indicies - 1
 
                     return True, capture_predator_indicies, shared_reward, shared_true_reward
@@ -754,20 +755,20 @@ class SyncPredPrey(MultiAgentEnv):
                 if self.capture_action:
                     if self.num_capture_actions == 1:
                         # Get indicies for non-zero elements where capture predators exist
-                        non_zero_indices = jnp.nonzero(possible_capture_predators[index], size=size)[0]
+                        non_zero_indices = jnp.nonzero(possible_capture_predators, size=size)[0]
 
                         # Check whether prey is captured
                         captured, capture_predator_indicies, shared_reward, shared_true_reward = (
-                            jax.lax.cond(num_capture_predators[index] >= self.capture_action_conditions,
+                            jax.lax.cond(num_capture_predators >= self.capture_action_conditions,
                                          check_prey_captured, check_prey_not_captured, non_zero_indices, shared_reward, shared_true_reward))
 
                     else:
                         # Pad zeroed out agents with non-capture actions
                         # This is needed so that unique does put 0 as the first found value
                         possible_capture_predators_actions_padded = (
-                            jnp.where(possible_capture_predators_actions[index] == 0,
+                            jnp.where(possible_capture_predators_actions == 0,
                                       self.num_actions,
-                                      possible_capture_predators_actions[index]))
+                                      possible_capture_predators_actions))
 
                         # Check for predators with unique capture actions
                         unique_capture_actions, unique_capture_actions_indices = (
@@ -789,11 +790,11 @@ class SyncPredPrey(MultiAgentEnv):
 
                 else:
                     # Get indicies for non-zero elements where capture predators exist
-                    non_zero_indices = jnp.nonzero(possible_capture_predators[index], size=size)[0]
+                    non_zero_indices = jnp.nonzero(possible_capture_predators, size=size)[0]
 
                     # Check whether prey is captured
                     captured, capture_predator_indicies, shared_reward, shared_true_reward = (
-                        jax.lax.cond(num_capture_predators[index] >= self.capture_action_conditions,
+                        jax.lax.cond(num_capture_predators >= self.capture_action_conditions,
                                      check_prey_captured, check_prey_not_captured, non_zero_indices,
                                      shared_reward, shared_true_reward))
 
@@ -843,8 +844,8 @@ class SyncPredPrey(MultiAgentEnv):
                                  jnp.ndarray, jnp.ndarray, jnp.ndarray]:
                     """ Handle grid update for  non-captured prey. """
                     # Get check for number of available prey movement postions
-                    # non_zero_indices = jnp.nonzero(available_prey_positions[index], size=self.num_movement_actions)[0]
-                    num_non_zero_indices = available_prey_positions[index].sum()
+                    # non_zero_indices = jnp.nonzero(available_prey_positions, size=self.num_movement_actions)[0]
+                    num_non_zero_indices = available_prey_positions.sum()
 
                     def apply_shaping_reward(shared_reward, shared_true_reward):
                         """ Handle shaping reward function. """
@@ -878,11 +879,11 @@ class SyncPredPrey(MultiAgentEnv):
                         else:
                             if self.modified_penalty_condition is None:
                                 shared_reward, shared_true_reward = (
-                                    jax.lax.cond(num_capture_predators[index] > 0,
+                                    jax.lax.cond(num_capture_predators > 0,
                                                  apply_penalty, no_penalty, shared_reward, shared_true_reward))
                             else:
                                 shared_reward, shared_true_reward = (
-                                    jax.lax.cond(num_capture_predators[index] >= self.modified_penalty_condition,
+                                    jax.lax.cond(num_capture_predators >= self.modified_penalty_condition,
                                                  apply_penalty, no_penalty, shared_reward, shared_true_reward))
 
                         return shared_reward, shared_true_reward
@@ -898,7 +899,7 @@ class SyncPredPrey(MultiAgentEnv):
                         shared_reward, shared_true_reward =  (
                             jax.lax.cond(self.use_shaping_reward &
                                          ~state.disable_shaping_reward[0] &
-                                         (num_capture_predators[index] == self.shaping_reward_condition),
+                                         (num_capture_predators == self.shaping_reward_condition),
                                          apply_shaping_reward, no_shaping_reward, shared_reward, shared_true_reward))
 
                     def resting(grid: jnp.ndarray, prey_positions: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -909,7 +910,7 @@ class SyncPredPrey(MultiAgentEnv):
                         """ Handle moving prey that are not resting. """
                         # Pad first position incase it is the 0th index
                         # This is needed because the empty spaces are filled with zeroes
-                        non_zero_indices = jnp.nonzero(available_prey_positions[index],
+                        non_zero_indices = jnp.nonzero(available_prey_positions,
                                                        size=self.num_movement_actions)[0]
                         non_zero_indices_padded = (
                             non_zero_indices.at[0].set(non_zero_indices[0] + self.num_movement_actions))
@@ -1231,266 +1232,3 @@ class SyncPredPrey(MultiAgentEnv):
         img[ymin:ymax, xmin:xmax, :] = np.int8(255)
 
         return img
-
-    ###########################################
-    #          Saved Unused Functions         #
-    ###########################################
-    # def step_non_jit(self, prng: chex.PRNGKey, state: State, actions: jnp.ndarray):
-    #     """
-    #     Environment step function.
-    #     """
-    #     ###########################################
-    #     #            Initialize step              #
-    #     ###########################################
-    #     # Initialize reward for the step
-    #     self.shared_reward = jnp.array([1.0 * self.reward_time], dtype=jnp.float32)
-    #     self.shared_true_reward = jnp.array([0.0], dtype=jnp.float32)
-    #
-    #     # Get current grid from the state
-    #     grid = state.grid
-    #
-    #     ###########################################
-    #     #              Move predators             #
-    #     ###########################################
-    #     # Get random generator key and update the main key
-    #     prng, key = jax.random.split(prng)
-    #
-    #     # Randomly iterate over the predators
-    #     predator_random_indicies = jax.random.permutation(key, self.num_predators)
-    #
-    #     # Not currently needed but saved for later
-    #     # Zero out actions for inactive agents
-    #     # def inactive_check(action, actives):
-    #     #     action = jnp.where(actives == 0, self.actions_enum.stay, action)
-    #     #     return action
-    #     # vmap_inactive_check = jax.vmap(inactive_check, (0, 0), 0)
-    #     # actions = vmap_inactive_check(actions, state.agent_actives)
-    #
-    #     # Predators move based on actions from an algorithm
-    #     new_predator_positions = state.agent_positions + self.grid_actions[actions]
-    #
-    #     # Bound the new positions by the shape of the grid
-    #     new_predator_positions = jnp.clip(new_predator_positions, 0, (self.world_shape_jax - 1))
-    #
-    #     # Check if the agents position changed
-    #     moved = ~jnp.all(new_predator_positions == state.agent_positions, axis=1)
-    #
-    #     def predator_position_update(i: int, val: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]) \
-    #             -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    #         """ For loop function to update predator position in the grid. """
-    #         grid, new_pos, moved = val
-    #         index = predator_random_indicies[i]
-    #
-    #         def moved_fun(grid: jnp.ndarray, moved: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    #             """ Conditional function for handling agents that moved """
-    #             # Set previous position in grid to empty
-    #             grid = grid.at[state.agent_positions[index][0],
-    #             state.agent_positions[index][1]].set(jnp.int8(self.features_enum.empty))
-    #
-    #             # Set new position to predator index
-    #             # self.features_enum[f'predator_{index + 1}']
-    #             grid = grid.at[new_pos[index][0], new_pos[index][1]].set(jnp.int8(index + 1))
-    #             return grid, moved
-    #
-    #         def unmoved_fun(grid: jnp.ndarray, moved: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    #             """ Conditional function for handling unmoved agents """
-    #             return grid, moved.at[index].set(False)
-    #
-    #         grid, moved = jax.lax.cond((state.agent_actives[index][0] == 1) &
-    #                                    moved[index] &
-    #                                    (grid[new_pos[index][0], new_pos[index][1]] == self.features_enum.empty),
-    #                                    moved_fun, unmoved_fun, grid, moved)
-    #
-    #         return grid, new_pos, moved
-    #
-    #     # Update predator position in the grid
-    #     grid, _, updated_moved = jax.lax.fori_loop(0, self.num_predators, predator_position_update,
-    #                                                (grid, new_predator_positions, moved))
-    #
-    #     ###########################################
-    #     #                Move prey                #
-    #     ###########################################
-    #     # Prey agents move randomly
-    #
-    #     # Get random generator keys for the prey
-    #     # and update the main key
-    #     # prng, key, *keys = jax.random.split(prng, self.num_prey+2)
-    #     prng, key, prey_key = jax.random.split(prng, 3)
-    #
-    #     # Randomly iterate over the predators
-    #     prey_random_indicies = jax.random.permutation(key, self.num_prey)
-    #
-    #     # Check for available actions for the prey
-    #     possible_prey_positions = jnp.expand_dims(state.prey_positions, axis=1) + self.grid_actions[1:5]
-    #     available_prey_positions = grid[possible_prey_positions[:, :, 0],
-    #     possible_prey_positions[:, :, 1]]
-    #     available_prey_positions = jnp.where(available_prey_positions == self.features_enum.empty, 1, 0)
-    #
-    #     if self.diagonal_capture:
-    #         # Check for possible predators on the diagonal
-    #         possible_prey_capture_diag_positions = (jnp.expand_dims(state.prey_positions, axis=1) +
-    #                                                 self.diagonal_actions)
-    #         # Combine all positions around the prey to check for capture predators
-    #         possible_prey_capture_positions = jnp.concatenate([possible_prey_positions,
-    #                                                            possible_prey_capture_diag_positions], axis=1)
-    #     else:
-    #         possible_prey_capture_positions = possible_prey_positions
-    #
-    #     # Get the entities in the positions around the prey
-    #     # and zero out the prey entities
-    #     possible_capture_predators = grid[possible_prey_capture_positions[:, :, 0],
-    #     possible_prey_capture_positions[:, :, 1]]
-    #     possible_capture_predators = jnp.where(possible_capture_predators == self.features_enum.prey, 0,
-    #                                            possible_capture_predators)
-    #
-    #     # Check if predators have capture action selected
-    #     if self.capture_action:
-    #         # Get actions predators in positions around the prey.
-    #         # We must subtract 1 since the action indicies start at 0
-    #         # and the predator indicies start at 1.
-    #         # We append -1 to the actions so that the -1 feature index will return a -1 action.
-    #         possible_capture_predators_actions = jnp.append(actions, -1)[possible_capture_predators - 1]
-    #
-    #         # Create mask for pedators with capture actions
-    #         mask_possible_capture_predators_actions = jnp.where(possible_capture_predators_actions >= 5, 1, 0)
-    #
-    #         # Mask out predators with non-capture actions
-    #         possible_capture_predators_actions = (possible_capture_predators_actions *
-    #                                               mask_possible_capture_predators_actions)
-    #         possible_capture_predators = possible_capture_predators * mask_possible_capture_predators_actions
-    #
-    #         if self.num_capture_actions == 1:
-    #             num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum(axis=1)
-    #
-    #     else:
-    #         # Count if there are enough predators around the prey
-    #         num_capture_predators = jnp.where(possible_capture_predators != 0, 1, 0).sum(axis=1)
-    #
-    #     # Move prey if they have not been captured
-    #     # Else remove them and the capturing predators from the grid
-    #     def prey_position_update(i: int, val: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]) \
-    #             -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    #         """ For loop function to update prey position in the grid. """
-    #         prey_key, grid, prey_positions, predator_actives, prey_actives = val
-    #         index = prey_random_indicies[i]
-    #         prey_key, loop_key = jax.random.split(prey_key)
-    #
-    #         def active_fun(grid: jnp.ndarray, prey_positions: jnp.ndarray,
-    #                        predator_actives: jnp.ndarray, prey_actives: jnp.ndarray) \
-    #                 -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    #             """ Conditional function for handling active agents """
-    #
-    #             ###########################################
-    #             #          Check if prey captured         #
-    #             ###########################################
-    #             captured = False
-    #             if self.capture_action:
-    #                 if self.num_capture_actions == 1:
-    #                     if num_capture_predators[index] >= self.capture_action_conditions:
-    #                         captured = True
-    #
-    #                         # Capture predator indicies
-    #                         # Only get the number of required predators
-    #                         non_zero_indices = jnp.nonzero(possible_capture_predators[index])[0]
-    #                         capture_predator_indicies = (
-    #                             possible_capture_predators)[index][non_zero_indices[:self.capture_action_conditions]]
-    #                         capture_predator_indicies = capture_predator_indicies - 1
-    #
-    #                 else:
-    #                     # Check for unique capture actions and retrive index of first occurance
-    #                     unique_capture_actions, unique_capture_actions_indices = (
-    #                         jnp.unique(possible_capture_predators_actions[index], return_index=True))
-    #
-    #                     # Check for non-zero capture actions
-    #                     # Required because jnp.unique also counts 0 as unique
-    #                     non_zero_indices = jnp.nonzero(unique_capture_actions)[0]
-    #
-    #                     # Mask out 0 values found by jnp.unique
-    #                     unique_capture_actions = unique_capture_actions[non_zero_indices]
-    #                     unique_capture_actions_indices = unique_capture_actions_indices[non_zero_indices]
-    #
-    #                     # Ensure there are enough unique capture predators
-    #                     if len(unique_capture_actions) >= self.capture_action_conditions:
-    #                         captured = True
-    #
-    #                         # Capture predator indicies
-    #                         capture_predator_indicies = possible_capture_predators[index][
-    #                             unique_capture_actions_indices]
-    #                         capture_predator_indicies = capture_predator_indicies - 1
-    #
-    #             else:
-    #                 if num_capture_predators[index] >= self.capture_action_conditions:
-    #                     captured = True
-    #
-    #                     # Capture predator indicies
-    #                     # Only get the number of required predators
-    #                     non_zero_indices = jnp.nonzero(possible_capture_predators[index])[0]
-    #                     capture_predator_indicies = (
-    #                         possible_capture_predators)[index][non_zero_indices[:self.capture_action_conditions]]
-    #                     capture_predator_indicies = capture_predator_indicies - 1
-    #
-    #             ###########################################
-    #             #         Update state for prey           #
-    #             ###########################################
-    #             # If prey is not captured compute the random movement action
-    #             # or whether the prey should rest
-    #             rest = False
-    #             if not captured:
-    #                 non_zero_indices = jnp.nonzero(available_prey_positions[index])[0]
-    #                 if (len(non_zero_indices) == 0) or (jax.random.uniform(loop_key) < self.prey_rest):
-    #                     rest = True
-    #                 else:
-    #                     position_index = jax.random.choice(loop_key, non_zero_indices)
-    #                     new_pos = possible_prey_positions[index][position_index]
-    #
-    #             if captured:
-    #                 # Zero out previous prey position
-    #                 grid = grid.at[state.prey_positions[index][0],
-    #                                state.prey_positions[index][1]].set(jnp.int8(self.features_enum.empty))
-    #
-    #                 # Zero out capture predator position
-    #                 grid = grid.at[new_predator_positions[capture_predator_indicies][0],
-    #                                new_predator_positions[capture_predator_indicies][1]].set(
-    #                     jnp.int8(self.features_enum.empty))
-    #
-    #                 # Update actives for predators and prey
-    #                 predator_actives = predator_actives.at[capture_predator_indicies].set(0)
-    #                 prey_actives = prey_actives.at[index].set(0)
-    #             else:
-    #                 # Move prey when not resting
-    #                 if not rest:
-    #                     # Zero out previous prey position
-    #                     grid = grid.at[state.prey_positions[index, 0],
-    #                                    state.prey_positions[index, 1]].set(jnp.int8(self.features_enum.empty))
-    #
-    #                     # Move prey to new position
-    #                     grid = grid.at[new_pos[0], new_pos[1]].set(jnp.int8(self.features_enum.prey))
-    #
-    #                     # Update prey positions
-    #                     prey_positions = prey_positions.at[index].set(new_pos)
-    #
-    #             return grid, prey_positions, predator_actives, prey_actives
-    #
-    #         def inactive_fun(grid: jnp.ndarray, prey_positions: jnp.ndarray,
-    #                          predator_actives: jnp.ndarray, prey_actives: jnp.ndarray) \
-    #                 -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    #             """ Conditional function for handling inactive/frozen agents """
-    #             return grid, prey_positions, predator_actives, prey_actives
-    #
-    #         grid, prey_positions, predator_actives, prey_actives = (
-    #             jax.lax.cond(state.prey_actives[index][0] == 1, active_fun, inactive_fun,
-    #                          grid, prey_positions, predator_actives, prey_actives))
-    #
-    #         return prey_key, grid, prey_positions, predator_actives, prey_actives
-    #
-    #     # Update prey position in the grid
-    #     (prey_key,
-    #      grid,
-    #      new_prey_positions,
-    #      new_predator_actives,
-    #      new_prey_actives) = jax.lax.fori_loop(0, self.num_prey, prey_position_update,
-    #                                            (prey_key,
-    #                                             grid,
-    #                                             state.prey_positions,
-    #                                             state.agent_actives,
-    #                                             state.prey_actives))
